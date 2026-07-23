@@ -1,0 +1,86 @@
+from flask import Flask, request, render_template_string, jsonify
+import sqlite3, secrets
+
+app = Flask(__name__)
+
+# === HTML TEMPLATE nhúng sẵn ===
+HTML = '''
+<!DOCTYPE html>
+<html>
+<head><title>Key Shop</title></head>
+<body style="font-family:monospace;padding:20px;background:#111;color:#0f0;">
+<h1>Bán Key</h1>
+<div id="list"></div>
+<input id="email" placeholder="Email" style="padding:8px;width:200px;">
+<button onclick="buy()" style="background:#0f0;border:none;padding:8px 16px;">Mua (giả lập)</button>
+<div id="result" style="margin-top:20px;"></div>
+<script>
+let selected = null;
+async function load() {
+  let r = await fetch('/products');
+  let p = await r.json();
+  document.getElementById('list').innerHTML = p.map(i => 
+    `<div><b>${i.name}</b> - ${i.price}đ <button onclick="selected=${i.id}">Chọn</button></div>`
+  ).join('');
+}
+async function buy() {
+  if(!selected) return alert('Chọn sản phẩm');
+  let r = await fetch('/buy', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({product_id:selected, email:document.getElementById('email').value})
+  });
+  let d = await r.json();
+  document.getElementById('result').innerHTML = d.key ? `Key: <b>${d.key}</b>` : 'Lỗi: '+d.msg;
+}
+load();
+</script>
+</body>
+</html>
+'''
+
+# === DB khởi tạo ===
+def init_db():
+    c = sqlite3.connect('keys.db')
+    c.execute('CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY, name TEXT, price INTEGER)')
+    c.execute('CREATE TABLE IF NOT EXISTS keys (id INTEGER PRIMARY KEY, product_id INTEGER, key_text TEXT UNIQUE, sold INTEGER DEFAULT 0)')
+    c.execute('CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY, product_id INTEGER, email TEXT, key_text TEXT)')
+    # Seed sản phẩm mẫu
+    c.execute('INSERT OR IGNORE INTO products VALUES (1, "Key Windows Pro", 500000)')
+    c.execute('INSERT OR IGNORE INTO keys (product_id, key_text) VALUES (1, "ABC123-XYZ789"), (1, "DEF456-UVW012")')
+    c.commit()
+    c.close()
+
+init_db()
+
+# === API ===
+@app.route('/')
+def index():
+    return render_template_string(HTML)
+
+@app.route('/products')
+def products():
+    c = sqlite3.connect('keys.db')
+    rows = c.execute('SELECT id, name, price FROM products').fetchall()
+    c.close()
+    return jsonify([{'id':r[0], 'name':r[1], 'price':r[2]} for r in rows])
+
+@app.route('/buy', methods=['POST'])
+def buy():
+    data = request.get_json()
+    pid = data.get('product_id')
+    email = data.get('email')
+    c = sqlite3.connect('keys.db')
+    row = c.execute('SELECT id, key_text FROM keys WHERE product_id=? AND sold=0 LIMIT 1', (pid,)).fetchone()
+    if not row:
+        c.close()
+        return jsonify({'status':'error', 'msg':'Hết key'}), 400
+    key_id, key_text = row
+    c.execute('UPDATE keys SET sold=1 WHERE id=?', (key_id,))
+    c.execute('INSERT INTO orders (product_id, email, key_text) VALUES (?,?,?)', (pid, email, key_text))
+    c.commit()
+    c.close()
+    return jsonify({'status':'success', 'key':key_text})
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
